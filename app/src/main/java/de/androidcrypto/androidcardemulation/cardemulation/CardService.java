@@ -19,6 +19,7 @@ package de.androidcrypto.androidcardemulation.cardemulation;/*
 import android.nfc.cardemulation.HostApduService;
 import android.os.Bundle;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 import de.androidcrypto.androidcardemulation.common.logger.Log;
@@ -41,6 +42,16 @@ import de.androidcrypto.androidcardemulation.common.logger.Log;
  */
 public class CardService extends HostApduService {
     private static final String TAG = "CardService";
+    private static final String PPSE_AID = "2PAY.SYS.DDF01";
+    //private static final String PPSE_AID = "325041592e5359532e4444463031"; // PPSE_AID = "2PAY.SYS.DDF01"
+    private static final String VISA_AID = "A0000000031010";
+    private static final String VISA_SELECT_PPSE_COMMAND = "00a404000e325041592e5359532e444446303100";
+    private static final String VISA_SELECT_PPSE_RESPONSE = "6f2b840e325041592e5359532e4444463031a519bf0c1661144f07a00000000310109f0a080001050100000000";
+    private static final String VISA_SELECT_AID_COMMAND = "00a4040007a000000003101000";
+    private static final String VISA_SELECT_AID_RESPONSE = "6f5d8407a0000000031010a5525010564953412044454249542020202020208701029f38189f66049f02069f03069f1a0295055f2a029a039c019f37045f2d02656ebf0c1a9f5a0531082608269f0a080001050100000000bf6304df200180";
+    private static final String VISA_GET_PROCESSING_OPTIONS_COMMAND = "80a80000238321a0000000000000000001000000000008400000000000084007020300801733700000";
+    private static final String VISA_GET_PROCESSING_OPTIONS_RESPONSE = "77478202200057134921828094896752d25022013650000000000f5f3401009f100706040a03a020009f26089f98ecaea782d0739f2701809f3602033c9f6c0216009f6e0420700000";
+
     // AID for our loyalty card service.
     private static final String SAMPLE_LOYALTY_CARD_AID = "F222222222";
     // ISO-DEP command HEADER for selecting an AID.
@@ -50,7 +61,32 @@ public class CardService extends HostApduService {
     private static final byte[] SELECT_OK_SW = HexStringToByteArray("9000");
     // "UNKNOWN" status word sent in response to invalid APDU command (0x0000)
     private static final byte[] UNKNOWN_CMD_SW = HexStringToByteArray("0000");
+
+    private static final byte[] SELECT_APDU_PPSE_COMMAND = HexStringToByteArray(VISA_SELECT_PPSE_COMMAND);
+    private static final byte[] SELECT_APDU_PPSE_RESPONSE = HexStringToByteArray(VISA_SELECT_PPSE_RESPONSE);
+    private static final byte[] SELECT_APDU_VISA_COMMAND = HexStringToByteArray(VISA_SELECT_AID_COMMAND);
+    private static final byte[] SELECT_APDU_VISA_RESPONSE = HexStringToByteArray(VISA_SELECT_AID_RESPONSE);
+    private static final byte[] GET_PROCESSING_OPTIONS_COMMAND_VISA = HexStringToByteArray(VISA_GET_PROCESSING_OPTIONS_COMMAND);
+    private static final byte[] GET_PROCESSING_OPTIONS_RESPONSE_VISA = HexStringToByteArray(VISA_GET_PROCESSING_OPTIONS_RESPONSE);
+    private static final int CHECK_FIRST_BYTES_GET_PROCESSING_OPTIONS_COMMAND_VISA = 6; // compare the first xx bytes to apduCommand and check the complete length
+    private static final int PAN_POSITION_IN_GET_PROCESSING_OPTIONS_RESPONSE_VISA = 16; // the PAN begins at pos xx of the hex string and is 16 chars long
+    private static final int EXP_POSITION_IN_GET_PROCESSING_OPTIONS_RESPONSE_VISA = 33; // the Expire Date begins at pos xx of the hex string and is 3 bytes long
+    // note on expire date: d25022 means d = separator, 2502 = YYMM, 2.. next field, so best use String copy
+    private static String PAN_NEW = "4871778899001122";
+    private static String EXP_NEW = "2605";
+
+
+    //private static final byte[] SELECT_APDU_VISA = BuildSelectApdu(VISA_AID);
     private static final byte[] SELECT_APDU = BuildSelectApdu(SAMPLE_LOYALTY_CARD_AID);
+
+    private int status = 0;
+    // 0 = no connection attempt
+    // 1 = select PPSE done
+    // 2 = select AID (here VISA) done
+    // 3 = getProcessingOptions done
+
+    // https://stackoverflow.com/questions/26208056/initial-handshake-between-nfc-controller-and-pos-reader
+
 
     /**
      * Called if the connection to the NFC card is lost, in order to let the application know the
@@ -84,9 +120,71 @@ public class CardService extends HostApduService {
     // BEGIN_INCLUDE(processCommandApdu)
     @Override
     public byte[] processCommandApdu(byte[] commandApdu, Bundle extras) {
+        Log.i(TAG, "************************************");
         Log.i(TAG, "Received APDU: " + ByteArrayToHexString(commandApdu));
+        //Log.i(TAG, "SELECT_VISA  : " + ByteArrayToHexString(SELECT_APDU_VISA));
+
+
+        int statusNext = 0;
+        byte[] response;
+        byte[] completeResponse;
+        if (Arrays.equals(commandApdu, SELECT_APDU_PPSE_COMMAND)) {
+            Log.i(TAG, "SELECT_APDU_PPSE_COMMAND qualifies for statusNext = 1");
+            statusNext = 1;
+        }
+        if (Arrays.equals(commandApdu, SELECT_APDU_VISA_COMMAND)) {
+            Log.i(TAG, "SELECT_APDU_VISA_COMMAND qualifies for statusNext = 2");
+            statusNext = 2;
+        }
+
+        System.out.println("## commandApdu: " + ByteArrayToHexString(Arrays.copyOf(commandApdu, CHECK_FIRST_BYTES_GET_PROCESSING_OPTIONS_COMMAND_VISA)));
+        System.out.println("## GPOVISAApdu: " + ByteArrayToHexString(Arrays.copyOf(GET_PROCESSING_OPTIONS_COMMAND_VISA, CHECK_FIRST_BYTES_GET_PROCESSING_OPTIONS_COMMAND_VISA)));
+
+        if (Arrays.equals(Arrays.copyOf(commandApdu, CHECK_FIRST_BYTES_GET_PROCESSING_OPTIONS_COMMAND_VISA), Arrays.copyOf(GET_PROCESSING_OPTIONS_COMMAND_VISA, CHECK_FIRST_BYTES_GET_PROCESSING_OPTIONS_COMMAND_VISA))) {
+            // at this point the first xx bytes are equals
+            // now check for the complete length
+            if (commandApdu.length == GET_PROCESSING_OPTIONS_COMMAND_VISA.length) {
+                Log.i(TAG, "GET_PROCESSING_OPTIONS_COMMAND_VISA qualifies for statusNext = 3");
+                statusNext = 3;
+            }
+        }
+
+        if ((status == 0) && (statusNext == 1)) {
+            Log.i(TAG, "01 received selectPPSE: " + ByteArrayToHexString(commandApdu));
+            // send the select PPSE response
+            completeResponse = ConcatArrays(SELECT_APDU_PPSE_RESPONSE, SELECT_OK_SW);
+            Log.i(TAG, "01 send selectPPSE response: " + ByteArrayToHexString(completeResponse));
+            status = 1;
+            return completeResponse;
+        } else if ((status == 1) && (statusNext == 2)) {
+            Log.i(TAG, "02 received selectAid: " + ByteArrayToHexString(commandApdu));
+            // send the select AID response
+            completeResponse = ConcatArrays(SELECT_APDU_VISA_RESPONSE, SELECT_OK_SW);
+            Log.i(TAG, "02 send selectAid response: " + ByteArrayToHexString(completeResponse));
+            status = 2;
+            return completeResponse;
+        } else if ((status == 2) && (statusNext == 3)) {
+            Log.i(TAG, "03 received getProcessingOptions: " + ByteArrayToHexString(commandApdu));
+            // send the getProcessingOptions response
+
+            // here we are modifying the GPO response for a new CC number
+            String newPanGpoResponse = VISA_GET_PROCESSING_OPTIONS_RESPONSE.replace(VISA_GET_PROCESSING_OPTIONS_RESPONSE.substring(PAN_POSITION_IN_GET_PROCESSING_OPTIONS_RESPONSE_VISA, PAN_POSITION_IN_GET_PROCESSING_OPTIONS_RESPONSE_VISA + 16), PAN_NEW);
+            String newExpGpoResponse = newPanGpoResponse.replace(newPanGpoResponse.substring(EXP_POSITION_IN_GET_PROCESSING_OPTIONS_RESPONSE_VISA, EXP_POSITION_IN_GET_PROCESSING_OPTIONS_RESPONSE_VISA + 4), EXP_NEW);
+            completeResponse = ConcatArrays(HexStringToByteArray(newExpGpoResponse), SELECT_OK_SW);
+/*
+77478202200057134487177889902605225022013650000000000F5F3401009F100706040A03A020009F26089F98ECAEA782D0739F2701809F3602033C9F6C0216009F6E0420700000
+77478202200057134921828094896752d25022013650000000000f5f3401009f100706040a03a020009f26089f98ecaea782d0739f2701809f3602033c9f6c0216009f6e0420700000
+ */
+            //completeResponse = ConcatArrays(GET_PROCESSING_OPTIONS_RESPONSE_VISA, SELECT_OK_SW);
+            Log.i(TAG, "03 send getProcessingOptions response: " + ByteArrayToHexString(completeResponse));
+            status = 3;
+            return completeResponse;
+        }
+
+
         // If the APDU matches the SELECT AID command for this service,
         // send the loyalty card account number, followed by a SELECT_OK status trailer (0x9000).
+        /*
         if (Arrays.equals(SELECT_APDU, commandApdu)) {
             String account = AccountStorage.GetAccount(this);
             byte[] accountBytes = account.getBytes();
@@ -95,8 +193,24 @@ public class CardService extends HostApduService {
         } else {
             return UNKNOWN_CMD_SW;
         }
+
+     */
+        return UNKNOWN_CMD_SW;
     }
     // END_INCLUDE(processCommandApdu)
+
+    private static byte[] selectApdu(byte[] aid) {
+        byte[] commandApdu = new byte[6 + aid.length];
+        commandApdu[0] = (byte) 0x00;  // CLA
+        commandApdu[1] = (byte) 0xA4;  // INS
+        commandApdu[2] = (byte) 0x04;  // P1
+        commandApdu[3] = (byte) 0x00;  // P2
+        commandApdu[4] = (byte) (aid.length & 0x0FF);       // Lc
+        System.arraycopy(aid, 0, commandApdu, 5, aid.length);
+        commandApdu[commandApdu.length - 1] = (byte) 0x00;  // Le
+        return commandApdu;
+    }
+
 
     /**
      * Build APDU for SELECT AID command. This command indicates which service a reader is
@@ -127,6 +241,20 @@ public class CardService extends HostApduService {
             hexChars[j * 2 + 1] = hexArray[v & 0x0F]; // Select hex character from lower nibble
         }
         return new String(hexChars);
+    }
+
+    /**
+     * converts a hex encoded string to a byte array
+     * @param str
+     * @return
+     */
+    public static byte[] hexToBytes(String str) {
+        byte[] bytes = new byte[str.length() / 2];
+        for (int i = 0; i < bytes.length; i++) {
+            bytes[i] = (byte) Integer.parseInt(str.substring(2 * i, 2 * i + 2),
+                    16);
+        }
+        return bytes;
     }
 
     /**

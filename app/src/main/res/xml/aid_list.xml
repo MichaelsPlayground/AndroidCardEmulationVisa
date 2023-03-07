@@ -31,6 +31,7 @@ limitations under the License.
 <!-- BEGIN_INCLUDE(CardEmulationXML) -->
 <host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/service_name"
+    android:apduServiceBanner="@drawable/hce_260_96"
     android:requireDeviceUnlock="false">
     <!--
     If category="payment" is used for any aid-groups, you must also add an android:apduServiceBanner
@@ -57,8 +58,10 @@ limitations under the License.
         dispatch).
     -->
 
-    <aid-group android:description="@string/card_title" android:category="other">
+    <aid-group android:description="@string/card_title" android:category="payment">
         <aid-filter android:name="F222222222"/>
+        <aid-filter android:name="325041592E5359532E4444463031"/>
+        <aid-filter android:name="A0000000031010"/>
     </aid-group>
 <!-- END_INCLUDE(CardEmulationXML) -->
 </host-apdu-service>
